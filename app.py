@@ -28,13 +28,18 @@ def save_watchlist():
 # Load watchlist on startup
 load_watchlist()
 
-def get_stock_data(ticker, period='1mo'):
+def get_stock_data(ticker, start_date=None, end_date=None, period='1mo'):
     try:
         stock = yf.Ticker(ticker)
-        hist = stock.history(period=period)
-        return hist, None
+        if start_date and end_date:
+            # Use date range if provided
+            hist = stock.history(start=start_date, end=end_date)
+        else:
+            # Fall back to period
+            hist = stock.history(period=period)
+        return hist, stock, None
     except Exception as e:
-        return None, str(e)
+        return None, None, str(e)
 
 def add_to_watchlist(ticker):
     if ticker and ticker.upper() not in [t['symbol'] for t in st.session_state.watchlist]:
@@ -80,9 +85,13 @@ st.title("Stock Price Tracker")
 # Date range selection
 col1, col2 = st.columns(2)
 with col1:
-    start_date = st.date_input("Start Date", datetime.now() - timedelta(days=30))
+    start_date = st.date_input("Start Date", datetime.now() - timedelta(days=365))
 with col2:
     end_date = st.date_input("End Date", datetime.now())
+    
+# Validate date range
+if start_date >= end_date:
+    st.warning("⚠️ Start date must be before end date. Using default 1-year period.")
 
 # Display stock data
 if st.session_state.watchlist:
@@ -92,24 +101,43 @@ if st.session_state.watchlist:
     )
     
     if selected_stock:
-        period = '1y'  # Default period
-        data, error = get_stock_data(selected_stock, period)
+        # Use date range if provided, otherwise use default period
+        if start_date and end_date and start_date < end_date:
+            data, stock_obj, error = get_stock_data(selected_stock, start_date=start_date, end_date=end_date)
+        else:
+            period = '1y'  # Default period
+            data, stock_obj, error = get_stock_data(selected_stock, period=period)
         
         if error:
             st.error(f"Error fetching data for {selected_stock}: {error}")
         elif data is not None and not data.empty:
             # Display basic info
-            st.subheader(f"{selected_stock} - {yf.Ticker(selected_stock).info.get('longName', 'N/A')}")
+            try:
+                stock_name = stock_obj.info.get('longName', selected_stock) if stock_obj else selected_stock
+            except Exception:
+                stock_name = selected_stock
+            st.subheader(f"{selected_stock} - {stock_name}")
             
             # Current price and change
             current_price = data['Close'].iloc[-1]
             prev_close = data['Close'].iloc[-2] if len(data) > 1 else current_price
             price_change = current_price - prev_close
-            percent_change = (price_change / prev_close) * 100
+            percent_change = (price_change / prev_close) * 100 if prev_close != 0 else 0
             
             col1, col2, col3 = st.columns(3)
             col1.metric("Current Price", f"${current_price:.2f}")
-            col2.metric("Day Change", f"${price_change:.2f}", f"{percent_change:.2f}%")
+            col2.metric("Price Change", f"${price_change:.2f}", f"{percent_change:.2f}%")
+            
+            # Additional metrics
+            try:
+                if stock_obj:
+                    info = stock_obj.info
+                    market_cap = info.get('marketCap', 'N/A')
+                    if market_cap != 'N/A' and market_cap:
+                        market_cap_str = f"${market_cap/1e9:.2f}B" if market_cap >= 1e9 else f"${market_cap/1e6:.2f}M"
+                        col3.metric("Market Cap", market_cap_str)
+            except Exception:
+                pass
             
             # Stock chart
             fig = go.Figure()
